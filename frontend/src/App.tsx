@@ -4,11 +4,11 @@ import {
   useAccount,
   useBalance,
   usePublicClient,
+  useWalletClient,
+  useSimulateContract,
+  useSwitchChain,
   useConnect,
   useDisconnect,
-  useSwitchChain,
-  useChains,
-  useWriteContract,
 } from "wagmi";
 import { parseEther } from "viem";
 import { QueryClient, QueryClientProvider, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -74,16 +74,24 @@ function GamePanel() {
   const { address, chainId, isConnected } = useAccount();
   const qc = useQueryClient();
   const publicClient = usePublicClient({ chainId });
-  const chains = useChains();
+  const walletClient = useWalletClient({ chainId });
   const [wager, setWager] = useState("0.01");
   const [choice, setChoice] = useState<Side>("Heads");
   const [status, setStatus] = useState("Connect wallet to play");
-  const { writeContractAsync } = useWriteContract();
 
   const selectedContract = useMemo(() => {
     if (!chainId) return undefined;
     return Object.values(CONTRACTS).find((c) => c.chainId === chainId);
   }, [chainId]);
+
+  const simulation = useSimulateContract({
+    abi,
+    address: selectedContract?.address,
+    functionName: "flip",
+    args: [choice === "Heads" ? 0 : 1],
+    chainId: selectedContract?.chainId,
+    value: parseEther(wager as `${number}`),
+  });
 
   const balanceQuery = useBalance({
     address,
@@ -94,17 +102,10 @@ function GamePanel() {
   const mutation = useMutation({
     mutationFn: async () => {
       if (!selectedContract) throw new Error("Unsupported network");
-      if (!publicClient || !address) throw new Error("No wallet client");
+      if (!walletClient.data || !publicClient) throw new Error("No wallet client");
+      if (!simulation.data?.request) throw new Error(simulation.error?.message ?? "Unable to estimate gas");
       setStatus("Sending flip...");
-      const wagerValue = parseEther(wager as `${number}`);
-      const hash = await writeContractAsync({
-        abi,
-        address: selectedContract.address,
-        functionName: "flip",
-        args: [choice === "Heads" ? 0 : 1],
-        chainId: selectedContract.chainId,
-        value: wagerValue,
-      });
+      const hash = await walletClient.data.writeContract(simulation.data.request);
       setStatus(`Waiting for receipt... ${hash.slice(0, 10)}...`);
       await publicClient.waitForTransactionReceipt({ hash });
       setStatus("Flip confirmed! Check explorer.");
@@ -113,7 +114,7 @@ function GamePanel() {
     onError: (error) => setStatus(error.message),
   });
 
-  const disabled = !isConnected || !selectedContract || mutation.isPending;
+  const disabled = !isConnected || !selectedContract || mutation.isPending || simulation.isPending;
 
   return (
     <section className="panel main">
@@ -122,11 +123,6 @@ function GamePanel() {
         <ConnectControls />
       </div>
       <p className="subtext">Choose your side, enter a wager, and flip against the contract treasury.</p>
-      {!selectedContract && isConnected && (
-        <div className="warning">
-          Switch to Sepolia or Abstract testnet to play. Supported chains: {chains.map((c) => c.name).join(", ")}
-        </div>
-      )}
       <div className="controls">
         <label>
           Wager (ETH)
@@ -141,12 +137,13 @@ function GamePanel() {
           </select>
         </label>
         <button disabled={disabled} onClick={() => mutation.mutate()}>
-          {disabled ? "Connect + fund wallet" : "Flip"}
+          {disabled ? "Estimating..." : "Flip"}
         </button>
         <p className="status">{status}</p>
         {balanceQuery.data && (
           <p className="status">Balance: {Number(balanceQuery.data.formatted).toFixed(4)} {balanceQuery.data.symbol}</p>
         )}
+        {simulation.error && <p className="warning">{simulation.error.message}</p>}
       </div>
     </section>
   );
