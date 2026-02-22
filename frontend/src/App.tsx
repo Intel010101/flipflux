@@ -7,16 +7,27 @@ import {
   useConnect,
   useDisconnect,
   useSwitchChain,
+  useChains,
   useWriteContract,
 } from "wagmi";
 import { parseEther } from "viem";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import "./App.css";
 import { CONTRACTS } from "./lib/contracts";
 import { wagmiConfig } from "./lib/wagmi";
 
 const sides = ["Heads", "Tails"] as const;
+const abi = [
+  {
+    inputs: [{ internalType: "uint8", name: "guess", type: "uint8" }],
+    name: "flip",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function",
+  },
+];
+const queryClient = new QueryClient();
 
 type Side = (typeof sides)[number];
 
@@ -63,6 +74,7 @@ function GamePanel() {
   const { address, chainId, isConnected } = useAccount();
   const qc = useQueryClient();
   const publicClient = usePublicClient({ chainId });
+  const chains = useChains();
   const [wager, setWager] = useState("0.01");
   const [choice, setChoice] = useState<Side>("Heads");
   const [status, setStatus] = useState("Connect wallet to play");
@@ -82,19 +94,11 @@ function GamePanel() {
   const mutation = useMutation({
     mutationFn: async () => {
       if (!selectedContract) throw new Error("Unsupported network");
-      if (!publicClient) throw new Error("No public client");
+      if (!publicClient || !address) throw new Error("No wallet client");
       setStatus("Sending flip...");
       const wagerValue = parseEther(wager as `${number}`);
       const hash = await writeContractAsync({
-        abi: [
-          {
-            inputs: [{ internalType: "uint8", name: "guess", type: "uint8" }],
-            name: "flip",
-            outputs: [],
-            stateMutability: "payable",
-            type: "function",
-          },
-        ],
+        abi,
         address: selectedContract.address,
         functionName: "flip",
         args: [choice === "Heads" ? 0 : 1],
@@ -106,9 +110,7 @@ function GamePanel() {
       setStatus("Flip confirmed! Check explorer.");
       qc.invalidateQueries();
     },
-    onError: (error) => {
-      setStatus(error.message);
-    },
+    onError: (error) => setStatus(error.message),
   });
 
   const disabled = !isConnected || !selectedContract || mutation.isPending;
@@ -120,6 +122,11 @@ function GamePanel() {
         <ConnectControls />
       </div>
       <p className="subtext">Choose your side, enter a wager, and flip against the contract treasury.</p>
+      {!selectedContract && isConnected && (
+        <div className="warning">
+          Switch to Sepolia or Abstract testnet to play. Supported chains: {chains.map((c) => c.name).join(", ")}
+        </div>
+      )}
       <div className="controls">
         <label>
           Wager (ETH)
@@ -166,19 +173,27 @@ function ExplorerPanel() {
   );
 }
 
+function InnerApp() {
+  return (
+    <div className="app-shell">
+      <header>
+        <h1>FlipFlux</h1>
+        <p>Flip a coin on Sepolia or Abstract testnet with your wallet.</p>
+      </header>
+      <main>
+        <GamePanel />
+        <ExplorerPanel />
+      </main>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <WagmiConfig config={wagmiConfig}>
-      <div className="app-shell">
-        <header>
-          <h1>FlipFlux</h1>
-          <p>Flip a coin on Sepolia or Abstract testnet with your wallet.</p>
-        </header>
-        <main>
-          <GamePanel />
-          <ExplorerPanel />
-        </main>
-      </div>
+      <QueryClientProvider client={queryClient}>
+        <InnerApp />
+      </QueryClientProvider>
     </WagmiConfig>
   );
 }
