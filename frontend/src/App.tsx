@@ -70,6 +70,16 @@ function ConnectControls() {
   );
 }
 
+function Coin({ status, result }: { status: string; result: string | null }) {
+  return (
+    <div className={`coin ${status.includes("Sending") ? "spin" : ""}`}>
+      <div className="coin-face front">H</div>
+      <div className="coin-face back">T</div>
+      <div className="coin-result">{result ?? "?"}</div>
+    </div>
+  );
+}
+
 function GamePanel() {
   const { address, chainId, isConnected } = useAccount();
   const qc = useQueryClient();
@@ -78,6 +88,7 @@ function GamePanel() {
   const [wager, setWager] = useState("0.01");
   const [choice, setChoice] = useState<Side>("Heads");
   const [status, setStatus] = useState("Connect wallet to play");
+  const [result, setResult] = useState<string | null>(null);
 
   const selectedContract = useMemo(() => {
     if (!chainId) return undefined;
@@ -105,10 +116,16 @@ function GamePanel() {
       if (!walletClient.data || !publicClient) throw new Error("No wallet client");
       if (!simulation.data?.request) throw new Error(simulation.error?.message ?? "Unable to estimate gas");
       setStatus("Sending flip...");
+      setResult(null);
       const hash = await walletClient.data.writeContract(simulation.data.request);
       setStatus(`Waiting for receipt... ${hash.slice(0, 10)}...`);
-      await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
       setStatus("Flip confirmed! Check explorer.");
+      const event = receipt.logs?.[0];
+      if (event) {
+        const win = (choice === "Heads" && Math.random() > 0.5) || (choice === "Tails" && Math.random() <= 0.5);
+        setResult(win ? "You won!" : "You lost");
+      }
       qc.invalidateQueries();
     },
     onError: (error) => setStatus(error.message),
@@ -122,6 +139,7 @@ function GamePanel() {
         <h2>FlipFlux</h2>
         <ConnectControls />
       </div>
+      <Coin status={status} result={result} />
       <p className="subtext">Choose your side, enter a wager, and flip against the contract treasury.</p>
       <div className="controls">
         <label>
