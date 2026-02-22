@@ -10,26 +10,42 @@ import {
   useConnect,
   useDisconnect,
 } from "wagmi";
-import { parseEther } from "viem";
+import { parseEther, parseEventLogs, formatEther } from "viem";
 import { QueryClient, QueryClientProvider, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import "./App.css";
 import { CONTRACTS } from "./lib/contracts";
 import { wagmiConfig } from "./lib/wagmi";
 
-const sides = ["Heads", "Tails"] as const;
 const abi = [
   {
-    inputs: [{ internalType: "uint8", name: "guess", type: "uint8" }],
-    name: "flip",
-    outputs: [],
-    stateMutability: "payable",
     type: "function",
+    name: "flip",
+    stateMutability: "payable",
+    inputs: [{ internalType: "uint8", name: "guess", type: "uint8" }],
+    outputs: [],
   },
-];
-const queryClient = new QueryClient();
+  {
+    type: "event",
+    name: "BetPlaced",
+    inputs: [
+      { indexed: true, internalType: "address", name: "player", type: "address" },
+      { indexed: false, internalType: "uint256", name: "amount", type: "uint256" },
+      { indexed: false, internalType: "uint8", name: "guess", type: "uint8" },
+      { indexed: false, internalType: "uint8", name: "result", type: "uint8" },
+      { indexed: false, internalType: "bool", name: "won", type: "bool" },
+    ],
+  },
+] as const;
 
+const queryClient = new QueryClient();
+const sides = ["Heads", "Tails"] as const;
 type Side = (typeof sides)[number];
+type Outcome = {
+  status: "win" | "loss";
+  payout: string;
+  txLink: string;
+};
 
 function ConnectControls() {
   const { isConnected, address, chainId } = useAccount();
@@ -39,11 +55,7 @@ function ConnectControls() {
 
   if (!isConnected) {
     return (
-      <button
-        className="connect"
-        onClick={() => connect({ connector: connectors[0] })}
-        disabled={status === "pending"}
-      >
+      <button className="connect" onClick={() => connect({ connector: connectors[0] })} disabled={status === "pending"}>
         {status === "pending" ? "Connecting..." : "Connect Wallet"}
       </button>
     );
@@ -57,11 +69,7 @@ function ConnectControls() {
       <button className="link" onClick={() => disconnect()}>Disconnect</button>
       <div className="switcher">
         {chains.map((chain) => (
-          <button
-            key={chain.id}
-            className={chain.id === chainId ? "chain active" : "chain"}
-            onClick={() => switchChain({ chainId: chain.id })}
-          >
+          <button key={chain.id} className={chain.id === chainId ? "chain active" : "chain"} onClick={() => switchChain({ chainId: chain.id })}>
             {chain.name}
           </button>
         ))}
@@ -70,13 +78,16 @@ function ConnectControls() {
   );
 }
 
-function Coin({ status, result }: { status: string; result: string | null }) {
+function Coin({ spinning, outcome }: { spinning: boolean; outcome: Outcome | null }) {
   return (
-    <div className={`coin ${status.includes("Sending") ? "spin" : ""}`}>
-      <div className="coin-face front">H</div>
-      <div className="coin-face back">T</div>
-      <div className="coin-result">{result ?? "?"}</div>
-    </div>
+    <>
+      <div className={`coin ${spinning ? "spin" : ""}`}>H</div>
+      {outcome && (
+        <div className={`result-badge ${outcome.status}`}>
+          {outcome.status === "win" ? "You won!" : "You lost"} · +{outcome.payout} ETH
+        </div>
+      )}
+    </>
   );
 }
 
@@ -88,7 +99,7 @@ function GamePanel() {
   const [wager, setWager] = useState("0.01");
   const [choice, setChoice] = useState<Side>("Heads");
   const [status, setStatus] = useState("Connect wallet to play");
-  const [result, setResult] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
 
   const selectedContract = useMemo(() => {
     if (!chainId) return undefined;
@@ -115,16 +126,18 @@ function GamePanel() {
       if (!selectedContract) throw new Error("Unsupported network");
       if (!walletClient.data || !publicClient) throw new Error("No wallet client");
       if (!simulation.data?.request) throw new Error(simulation.error?.message ?? "Unable to estimate gas");
+      setOutcome(null);
       setStatus("Sending flip...");
-      setResult(null);
       const hash = await walletClient.data.writeContract(simulation.data.request);
       setStatus(`Waiting for receipt... ${hash.slice(0, 10)}...`);
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       setStatus("Flip confirmed! Check explorer.");
-      const event = receipt.logs?.[0];
-      if (event) {
-        const win = (choice === "Heads" && Math.random() > 0.5) || (choice === "Tails" && Math.random() <= 0.5);
-        setResult(win ? "You won!" : "You lost");
+      const logs = parseEventLogs({ abi, logs: receipt.logs });
+      const bet = logs.find((log) => log.eventName === "BetPlaced");
+      if (bet && selectedContract.txBase) {
+        const won = bet.args.won as boolean;
+        const payout = won ? formatEther((bet.args.amount as bigint) * 2n) : "0";
+        setOutcome({ status: won ? "win" : "loss", payout, txLink: `${selectedContract.txBase}${hash}` });
       }
       qc.invalidateQueries();
     },
@@ -139,7 +152,7 @@ function GamePanel() {
         <h2>FlipFlux</h2>
         <ConnectControls />
       </div>
-      <Coin status={status} result={result} />
+      <Coin spinning={mutation.isPending || status.includes("Sending") || status.includes("Waiting")} outcome={outcome} />
       <p className="subtext">Choose your side, enter a wager, and flip against the contract treasury.</p>
       <div className="controls">
         <label>
@@ -162,6 +175,11 @@ function GamePanel() {
           <p className="status">Balance: {Number(balanceQuery.data.formatted).toFixed(4)} {balanceQuery.data.symbol}</p>
         )}
         {simulation.error && <p className="warning">{simulation.error.message}</p>}
+        {outcome && (
+          <p className="tx-link">
+            Proof: <a href={outcome.txLink} target="_blank" rel="noreferrer">View transaction</a>
+          </p>
+        )}
       </div>
     </section>
   );
